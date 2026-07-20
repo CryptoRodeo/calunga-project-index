@@ -1,0 +1,59 @@
+name: Daily Slack Available Packages
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 14 * * *'
+
+jobs:
+  report-available-packages:
+    runs-on: ubuntu-latest
+    steps:
+      - name: log start
+        run: echo "Workflow daily_slack_available_packages started at $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+      - name: checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: setup python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+
+      - name: install python deps
+        run: pip install --require-hashes -r hack/requirements.txt
+
+      - name: run generate-available-packages
+        run: |
+          python hack/generate-available-packages.py > available_packages.json 2>generate_stderr.log
+          echo "Generated $(wc -c < available_packages.json) bytes of package data"
+
+      - name: post to slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          PACKAGES_JSON=$(cat available_packages.json)
+          TOTAL_PACKAGES=$(python -c "import json; d=json.load(open('available_packages.json')); print(d.get('total_packages', 'unknown'))")
+          TOTAL_VERSIONS=$(python -c "import json; d=json.load(open('available_packages.json')); print(d.get('total_versions', 'unknown'))")
+          DATE=$(date -u +'%Y-%m-%d')
+
+          # Slack text field limit is 40000 chars per block.
+          # Truncate if needed, keeping valid JSON structure visible.
+          CHAR_COUNT=${#PACKAGES_JSON}
+          if [ "$CHAR_COUNT" -gt 39000 ]; then
+            PACKAGES_JSON="${PACKAGES_JSON:0:39000}... (truncated)"
+          fi
+
+          # Build the Slack payload using jq for proper JSON escaping
+          PAYLOAD=$(jq -n \
+            --arg text "Trusted Libraries Index - Available Packages ($DATE)\nPackages: $TOTAL_PACKAGES | Versions: $TOTAL_VERSIONS\n\`\`\`$PACKAGES_JSON\`\`\`" \
+            '{text: $text}')
+
+          curl -sfS -X POST \
+            -H 'Content-Type: application/json' \
+            -d "$PAYLOAD" \
+            "$SLACK_WEBHOOK_URL"
+
+      - name: log end
+        if: always()
+        run: echo "Workflow daily_slack_available_packages ended at $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
