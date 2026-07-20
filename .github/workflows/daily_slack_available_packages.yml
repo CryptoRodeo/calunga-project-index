@@ -3,6 +3,7 @@ name: Daily Slack Available Packages
 on:
   workflow_dispatch:
   schedule:
+    # 9AM EST
     - cron: '0 14 * * *'
 
 jobs:
@@ -25,29 +26,20 @@ jobs:
 
       - name: run generate-available-packages
         run: |
-          python hack/generate-available-packages.py > available_packages.json 2>generate_stderr.log
+          python hack/generate-available-packages.py > available_packages.json
           echo "Generated $(wc -c < available_packages.json) bytes of package data"
 
       - name: post to slack
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          PACKAGES_JSON=$(cat available_packages.json)
-          TOTAL_PACKAGES=$(python -c "import json; d=json.load(open('available_packages.json')); print(d.get('total_packages', 'unknown'))")
-          TOTAL_VERSIONS=$(python -c "import json; d=json.load(open('available_packages.json')); print(d.get('total_versions', 'unknown'))")
+          SUMMARY=$(jq '{total_packages, total_versions}' available_packages.json)
+          TOTAL_PACKAGES=$(jq -r '.total_packages' available_packages.json)
+          TOTAL_VERSIONS=$(jq -r '.total_versions' available_packages.json)
           DATE=$(date -u +'%Y-%m-%d')
 
-          # Slack text field limit is 40000 chars per block.
-          # Truncate if needed, keeping valid JSON structure visible.
-          CHAR_COUNT=${#PACKAGES_JSON}
-          if [ "$CHAR_COUNT" -gt 39000 ]; then
-            PACKAGES_JSON="${PACKAGES_JSON:0:39000}... (truncated)"
-          fi
-
-          # Build the Slack payload using jq for proper JSON escaping
-          PAYLOAD=$(jq -n \
-            --arg text "Trusted Libraries Index - Available Packages ($DATE)\nPackages: $TOTAL_PACKAGES | Versions: $TOTAL_VERSIONS\n\`\`\`$PACKAGES_JSON\`\`\`" \
-            '{text: $text}')
+          TEXT=$(printf "Trusted Libraries Index - Available Packages (%s)\nPackages: %s | Versions: %s\n\`\`\`%s\`\`\`" "$DATE" "$TOTAL_PACKAGES" "$TOTAL_VERSIONS" "$SUMMARY")
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
 
           curl -sfS -X POST \
             -H 'Content-Type: application/json' \
